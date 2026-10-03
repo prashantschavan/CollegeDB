@@ -1,6 +1,7 @@
 """Use Google Gemini (free tier) to turn extracted content into a fixed JSON record."""
 import base64
 import json
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -60,6 +61,18 @@ Rules:
 - For videos/articles, the summary should say what it teaches or is about."""
 
 
+FALLBACK_MODEL = "gemini-3.8-flash"
+_active_model: str | None = None   # set when the configured model turned out to be retired
+
+
+def _replacement_model(error: str, current: str) -> str | None:
+    if "NOT_FOUND" not in error and "404" not in error:
+        return None
+    m = re.search(r"use models/([A-Za-z0-9.\-]+)", error)
+    candidate = m.group(1).rstrip(".") if m else FALLBACK_MODEL
+    return candidate if candidate != current else None
+
+
 class NoApiKey(Exception):
     pass
 
@@ -82,16 +95,25 @@ def structure(blocks: list[dict], api_key: str | None = None) -> dict:
         raise NoApiKey("No Gemini API key. Add your free key in the app: Settings → Gemini API key.")
     now = datetime.now(ZoneInfo(settings.TIMEZONE))
     client = genai.Client(api_key=key)
-    resp = client.models.generate_content(
-        model=settings.GEMINI_MODEL,
-        contents=_parts(blocks),
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT.format(today=now.strftime("%Y-%m-%d (%A)"), tz=settings.TIMEZONE),
-            response_mime_type="application/json",
-            response_json_schema=SCHEMA,
-            temperature=0.1,
-        ),
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT.format(today=now.strftime("%Y-%m-%d (%A)"), tz=settings.TIMEZONE),
+        response_mime_type="application/json",
+        response_json_schema=SCHEMA,
+        temperature=0.1,
     )
+    contents = _parts(blocks)
+    global _active_model
+    model = _active_model or settings.GEMINI_MODEL
+    try:
+        resp = client.models.generate_content(model=model, contents=contents, config=config)
+    except Exception as e:
+        # Google retires older models for new users ("404 NOT_FOUND ... no longer available ... use models/X").
+        # Switch to the model Google names (or our fallback) and remember it for later requests.
+        replacement = _replacement_model(str(e), model)
+        if not replacement:
+            raise
+        resp = client.models.generate_content(model=replacement, contents=contents, config=config)
+        _active_model = replacement
     if not resp.text:
         raise RuntimeError("Gemini returned no content (it may have been blocked by safety filters)")
     return _clean(json.loads(resp.text))
