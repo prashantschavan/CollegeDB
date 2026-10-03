@@ -17,6 +17,8 @@ function h(tag, props = {}, ...children) {
   for (const c of children.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : String(c));
   return el;
 }
+// Files are stored as {name, type, data:ArrayBuffer}; older entries may hold File objects.
+const toBlob = (f) => (f instanceof Blob ? f : new Blob([f.data], { type: f.type || "application/octet-stream" }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -138,6 +140,10 @@ async function drainQueue() {
           const res = await uploadWithRetry(entry, p, card);
           watch(res.id, card);
         } catch (err) {
+          if (err.status === 400 && !p.file) {   // nothing usable arrived: explain, don't keep retrying
+            setCard(card, "error", `Nothing arrived from the share (${entry.debug || "no details"}). Try sharing again from the installed Saver app, or use “Add manually”.`);
+            continue;
+          }
           allSent = false;
           setCard(card, "error", `Not sent: ${err.message}. It's kept on this phone and will be retried next time you open the app.`);
         }
@@ -155,7 +161,7 @@ async function uploadWithRetry(entry, part, card) {
     const fd = new FormData();
     fd.append("client_id", `${entry.id}-${part.i}`);
     fd.append("text", entry.text || ""); fd.append("title", entry.title || ""); fd.append("url", entry.url || "");
-    if (part.file) fd.append("file", part.file, part.file.name || "shared-file");
+    if (part.file) fd.append("file", toBlob(part.file), part.file.name || "shared-file");
     try {
       setCard(card, "wait", part.file ? "Uploading…" : "Sending…");
       return await api("/api/ingest", { method: "POST", body: fd });
@@ -329,7 +335,9 @@ $("#add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = $("#add-text").value.trim(), files = [...$("#add-files").files];
   if (!text && !files.length) return;
-  await SaverQueue.add({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title: "", text, url: "", files, created: Date.now() });
+  const stored = [];
+  for (const f of files) stored.push({ name: f.name, type: f.type || "application/octet-stream", data: await f.arrayBuffer() });
+  await SaverQueue.add({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title: "", text, url: "", files: stored, created: Date.now() });
   $("#add-form").reset(); $("#add-box").open = false;
   drainQueue();
 });
