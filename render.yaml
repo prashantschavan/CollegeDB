@@ -1,0 +1,30 @@
+# One-click deploy on Render (render.com): New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: my-saver
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: CLASS_CODE
+        sync: false              # you choose it, e.g. BVDU2026
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: wa-media
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_API_KEY
+        sync: false              # optional - leave blank
+      - key: ALLOW_SHARED_KEY
+        value: "false"
+      - key: TIMEZONE
+        value: Asia/Kolkata
