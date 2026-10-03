@@ -2,6 +2,7 @@
 import base64
 import json
 import re
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -73,6 +74,26 @@ def _replacement_model(error: str, current: str) -> str | None:
     return candidate if candidate != current else None
 
 
+# Tried in order when the main model is overloaded (503) or rate-limited per minute (429).
+BUSY_FALLBACKS = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
+
+
+def _is_busy(error: str) -> bool:
+    return any(k in error for k in ("503", "UNAVAILABLE", "overloaded", "high demand", "429", "RESOURCE_EXHAUSTED"))
+
+
+def _call_with_retry(client, model, contents, config, retries: int):
+    """Short exponential backoff for temporary overloads (2s, 5s)."""
+    for attempt in range(retries + 1):
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as e:
+            if attempt < retries and _is_busy(str(e)) and "per day" not in str(e).lower():
+                time.sleep((2, 5, 10)[attempt])
+                continue
+            raise
+
+
 class NoApiKey(Exception):
     pass
 
@@ -103,17 +124,38 @@ def structure(blocks: list[dict], api_key: str | None = None) -> dict:
     )
     contents = _parts(blocks)
     global _active_model
-    model = _active_model or settings.GEMINI_MODEL
-    try:
-        resp = client.models.generate_content(model=model, contents=contents, config=config)
-    except Exception as e:
-        # Google retires older models for new users ("404 NOT_FOUND ... no longer available ... use models/X").
-        # Switch to the model Google names (or our fallback) and remember it for later requests.
-        replacement = _replacement_model(str(e), model)
-        if not replacement:
+    primary = _active_model or settings.GEMINI_MODEL
+    candidates = [primary] + [m for m in BUSY_FALLBACKS if m != primary]
+    last_error = None
+    tried = set()
+    for i, model in enumerate(candidates):
+        if model in tried:
+            continue
+        tried.add(model)
+        try:
+            resp = _call_with_retry(client, model, contents, config, retries=2 if i == 0 else 1)
+            break
+        except Exception as e:
+            last_error = e
+            msg = str(e)
+            # Google retires older models for new users ("404 NOT_FOUND ... use models/X"): switch and remember.
+            replacement = _replacement_model(msg, model)
+            if replacement and i == 0:
+                tried.add(replacement)
+                try:
+                    resp = _call_with_retry(client, replacement, contents, config, retries=2)
+                    _active_model = replacement
+                    break
+                except Exception as e2:
+                    last_error = e2
+                    if not _is_busy(str(e2)):
+                        raise
+                    continue
+            if _is_busy(msg) or "NOT_FOUND" in msg:
+                continue          # busy or unknown model: try the next (lighter) model
             raise
-        resp = client.models.generate_content(model=replacement, contents=contents, config=config)
-        _active_model = replacement
+    else:
+        raise last_error
     if not resp.text:
         raise RuntimeError("Gemini returned no content (it may have been blocked by safety filters)")
     return _clean(json.loads(resp.text))
