@@ -1,7 +1,7 @@
 // Service worker: catches shares from Android's Share menu, and caches the app shell.
 importScripts("/static/idb.js");
 
-const SHELL = "saver-shell-v2";
+const SHELL = "saver-shell-v3";
 const SHELL_FILES = ["/", "/static/style.css", "/static/app.js", "/static/idb.js",
                      "/manifest.webmanifest", "/static/icon-192.png"];
 
@@ -25,12 +25,23 @@ self.addEventListener("fetch", (e) => {
     e.respondWith((async () => {
       try {
         const form = await e.request.formData();
+        // Read every shared file into memory right now. Android hands over files that may stop being
+        // readable later, so we never store the File handle itself.
+        const files = [], seen = [];
+        for (const [key, val] of form.entries()) {
+          if (typeof val === "string") continue;           // only File/Blob values
+          let buf = null;
+          try { buf = await val.arrayBuffer(); } catch (err) { seen.push(`${key}:${val.type}:unreadable`); continue; }
+          seen.push(`${key}:${val.type || "?"}:${buf.byteLength}`);
+          if (buf.byteLength) files.push({ name: val.name || "shared-file", type: val.type || "application/octet-stream", data: buf });
+        }
         await SaverQueue.add({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           title: form.get("title") || "",
           text: form.get("text") || "",
           url: form.get("url") || "",
-          files: form.getAll("files").filter((f) => f && f.size > 0),
+          files,
+          debug: `fields: ${[...new Set([...form.keys()])].join(",") || "none"}; files: ${seen.join(" | ") || "none"}`,
           created: Date.now(),
         });
         return Response.redirect("/?shared=1", 303);
