@@ -17,7 +17,7 @@ class Settings:
     CLASS_CODE = os.getenv("CLASS_CODE", "")
 
     # --- Google Gemini (free tier: aistudio.google.com/apikey) ---
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     # Optional shared key used when a user hasn't added their own (only if ALLOW_SHARED_KEY=true).
     # Free-tier limits are per Google project, so a shared key is split across everyone using it.
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
